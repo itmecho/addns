@@ -39,7 +39,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     println!("Checking IP address every {} seconds", &interval_seconds);
 
-    let client = Route53Client::new(Region::default());
+    let updater = Aws::new(c.domain, c.hosted_zone);
 
     loop {
         let machine_ip = r.ipv4_lookup("myip.opendns.com")?;
@@ -47,46 +47,73 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         if machine_ip != domain_ip {
             println!("Updating {} from {} to {}", c.domain, domain_ip, machine_ip);
-            // TODO load the current resource record set and use that
-            let res = client
-                .change_resource_record_sets(rusoto_route53::ChangeResourceRecordSetsRequest {
-                    change_batch: rusoto_route53::ChangeBatch {
-                        changes: vec![rusoto_route53::Change {
-                            action: String::from("UPSERT"),
-                            resource_record_set: rusoto_route53::ResourceRecordSet {
-                                alias_target: None,
-                                failover: None,
-                                geo_location: None,
-                                health_check_id: None,
-                                multi_value_answer: None,
-                                name: String::from(c.domain),
-                                region: None,
-                                resource_records: Some(vec![rusoto_route53::ResourceRecord {
-                                    value: format!("{}", machine_ip),
-                                }]),
-                                set_identifier: None,
-                                ttl: Some(300),
-                                traffic_policy_instance_id: None,
-                                type_: String::from("A"),
-                                weight: None,
-                            },
-                        }],
-                        // TODO add a comment
-                        comment: None,
-                    },
-                    hosted_zone_id: c.hosted_zone.to_string(),
-                })
-                .sync();
-
-            match res {
-                Ok(_) => println!("Updated successfully"),
-                Err(e) => eprintln!("Failed to update: {}", e),
-            };
-            println!("Need to update");
+            updater.update_dns_record(machine_ip)?
         } else {
             println!("Nothing to do");
         }
 
         std::thread::sleep(std::time::Duration::from_secs(interval_seconds));
     }
+}
+
+struct Aws {
+    client: Route53Client,
+    domain: String,
+    hosted_zone_id: String,
+}
+
+impl Aws {
+    pub fn new(domain: impl ToString, hosted_zone_id: impl ToString) -> Self {
+        Self {
+            client: Route53Client::new(Region::default()),
+            domain: domain.to_string(),
+            hosted_zone_id: hosted_zone_id.to_string(),
+        }
+    }
+}
+
+impl UpdateRecord for Aws {
+    fn update_dns_record(&self, ip: &Ipv4Addr) -> Result<(), Box<dyn Error>> {
+        let res = self
+            .client
+            .change_resource_record_sets(rusoto_route53::ChangeResourceRecordSetsRequest {
+                change_batch: rusoto_route53::ChangeBatch {
+                    changes: vec![rusoto_route53::Change {
+                        action: String::from("UPSERT"),
+                        resource_record_set: rusoto_route53::ResourceRecordSet {
+                            alias_target: None,
+                            failover: None,
+                            geo_location: None,
+                            health_check_id: None,
+                            multi_value_answer: None,
+                            name: self.domain.clone(),
+                            region: None,
+                            resource_records: Some(vec![rusoto_route53::ResourceRecord {
+                                value: format!("{}", ip),
+                            }]),
+                            set_identifier: None,
+                            ttl: Some(300),
+                            traffic_policy_instance_id: None,
+                            type_: String::from("A"),
+                            weight: None,
+                        },
+                    }],
+                    // TODO add a comment
+                    comment: None,
+                },
+                hosted_zone_id: self.hosted_zone_id.clone(),
+            })
+            .sync();
+
+        match res {
+            Ok(_) => println!("Updated successfully"),
+            Err(e) => eprintln!("Failed to update: {}", e),
+        };
+
+        Ok(())
+    }
+}
+
+trait UpdateRecord {
+    fn update_dns_record(&self, ip: &Ipv4Addr) -> Result<(), Box<dyn Error>>;
 }
