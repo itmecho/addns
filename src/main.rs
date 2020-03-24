@@ -1,6 +1,5 @@
 use rusoto_core::Region;
 use rusoto_route53::{Route53, Route53Client};
-use serde::Deserialize;
 use std::error::Error;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use trust_dns_resolver::{
@@ -10,16 +9,26 @@ use trust_dns_resolver::{
 
 const DEFAULT_OPENDNS_IP: Ipv4Addr = Ipv4Addr::new(208, 67, 222, 222);
 
-#[derive(Clone, Copy, Debug, Deserialize)]
-struct Config<'a> {
-    domain: &'a str,
-    hosted_zone: &'a str,
-    interval_seconds: Option<u64>,
+mod config {
+    use serde::Deserialize;
+
+    #[derive(Clone, Copy, Debug, Deserialize)]
+    pub struct Config<'a> {
+        pub domain: &'a str,
+        pub interval_seconds: Option<u64>,
+        pub provider: &'a str,
+        pub aws: Option<Aws<'a>>,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize)]
+    pub struct Aws<'a> {
+        pub hosted_zone_id: &'a str,
+    }
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
     let f = std::fs::read_to_string("addns.toml")?;
-    let c: Config = toml::from_str(&f)?;
+    let c: config::Config = toml::from_str(&f)?;
 
     let r = Resolver::default()?;
     let opendns_ip = r.ipv4_lookup("resolver1.opendns.com")?;
@@ -39,7 +48,22 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     println!("Checking IP address every {} seconds", &interval_seconds);
 
-    let updater = Aws::new(c.domain, c.hosted_zone);
+    let updater: Box<dyn UpdateRecord> = match c.provider {
+        "aws" => {
+            let provider_config = match c.aws {
+                Some(c) => c,
+                None => {
+                    eprintln!("Missing provider specific configuration");
+                    std::process::exit(1);
+                }
+            };
+            Box::new(Aws::new(c.domain, provider_config.hosted_zone_id))
+        }
+        _ => {
+            eprintln!("Unsupported DNS provider: {}", c.provider);
+            std::process::exit(1);
+        }
+    };
 
     loop {
         let machine_ip = r.ipv4_lookup("myip.opendns.com")?;
