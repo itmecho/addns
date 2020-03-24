@@ -23,6 +23,7 @@ mod config {
     #[derive(Clone, Copy, Debug, Deserialize)]
     pub struct Aws<'a> {
         pub hosted_zone_id: &'a str,
+        pub ttl: Option<i64>,
     }
 }
 
@@ -57,7 +58,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     std::process::exit(1);
                 }
             };
-            Box::new(Aws::new(c.domain, provider_config.hosted_zone_id))
+            Box::new(Aws::new(c.domain, provider_config.hosted_zone_id, provider_config.ttl.unwrap_or(300)))
         }
         _ => {
             eprintln!("Unsupported DNS provider: {}", c.provider);
@@ -84,14 +85,16 @@ struct Aws {
     client: Route53Client,
     domain: String,
     hosted_zone_id: String,
+    ttl: i64,
 }
 
 impl Aws {
-    pub fn new(domain: impl ToString, hosted_zone_id: impl ToString) -> Self {
+    pub fn new(domain: impl ToString, hosted_zone_id: impl ToString, ttl: i64) -> Self {
         Self {
             client: Route53Client::new(Region::default()),
             domain: domain.to_string(),
             hosted_zone_id: hosted_zone_id.to_string(),
+            ttl,
         }
     }
 }
