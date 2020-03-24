@@ -58,7 +58,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                     std::process::exit(1);
                 }
             };
-            Box::new(Aws::new(c.domain, provider_config.hosted_zone_id, provider_config.ttl.unwrap_or(300)))
+            Box::new(Aws::new(
+                c.domain,
+                provider_config.hosted_zone_id,
+                provider_config.ttl.unwrap_or(300),
+            ))
         }
         _ => {
             eprintln!("Unsupported DNS provider: {}", c.provider);
@@ -119,7 +123,7 @@ impl UpdateRecord for Aws {
                                 value: format!("{}", ip),
                             }]),
                             set_identifier: None,
-                            ttl: Some(300),
+                            ttl: Some(self.ttl),
                             traffic_policy_instance_id: None,
                             type_: String::from("A"),
                             weight: None,
