@@ -77,8 +77,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         if machine_ip != domain_ip {
             println!("Updating {} from {} to {}", c.domain, domain_ip, machine_ip);
             updater.update_dns_record(machine_ip)?
-        } else {
-            println!("Nothing to do");
         }
 
         std::thread::sleep(std::time::Duration::from_secs(interval_seconds));
