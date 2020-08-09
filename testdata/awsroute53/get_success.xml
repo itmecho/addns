@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<TestDNSAnswerResponse xmlns="https://route53.amazonaws.com/doc/2013-04-01/">
+    <Nameserver>ns-000.awsdns-00.net</Nameserver>
+    <RecordName>test.test.net</RecordName>
+    <RecordType>A</RecordType>
+    <RecordData>
+        <RecordDataEntry>1.2.3.4</RecordDataEntry>
+    </RecordData>
+    <ResponseCode>NOERROR</ResponseCode>
+    <Protocol>UDP</Protocol>
+</TestDNSAnswerResponse>

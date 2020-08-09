@@ -1,148 +1,141 @@
-use rusoto_core::Region;
-use rusoto_route53::{Route53, Route53Client};
-use std::error::Error;
+#[macro_use]
+extern crate log;
+
+use anyhow::{anyhow, Context, Result};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use structopt::{clap::crate_version, StructOpt};
 use trust_dns_resolver::{
     config::{NameServerConfig, Protocol, ResolverConfig},
-    Resolver,
+    AsyncResolver,
 };
+
+use ddns::config::{Config, ProviderType};
+use ddns::provider::{Aws, Provider};
 
 const DEFAULT_OPENDNS_IP: Ipv4Addr = Ipv4Addr::new(208, 67, 222, 222);
 
-mod config {
-    use serde::Deserialize;
+#[derive(Debug, StructOpt)]
+#[structopt(name = "ddns", about = "Multi-provider dynamic DNS")]
+struct Opts {
+    #[structopt(
+        long = "log-level",
+        short = "l",
+        default_value = "info",
+        env = "LOG_LEVEL",
+        help = "Enables different levels of log messages"
+    )]
+    log_level: String,
 
-    #[derive(Clone, Copy, Debug, Deserialize)]
-    pub struct Config<'a> {
-        pub domain: &'a str,
-        pub interval_seconds: Option<u64>,
-        pub provider: &'a str,
-        pub aws: Option<Aws<'a>>,
-    }
+    #[structopt(
+        long = "config-file",
+        short = "c",
+        default_value = "ddns.toml",
+        env = "CONFIG_FILE",
+        help = "Path to the config file"
+    )]
+    config_file: String,
 
-    #[derive(Clone, Copy, Debug, Deserialize)]
-    pub struct Aws<'a> {
-        pub hosted_zone_id: &'a str,
-        pub ttl: Option<i64>,
-    }
+    #[structopt(long = "once", short = "o", help = "Run ddns once and exit")]
+    once: bool,
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
-    let f = std::fs::read_to_string("addns.toml")?;
-    let c: config::Config = toml::from_str(&f)?;
+#[tokio::main]
+async fn main() -> Result<()> {
+    let opts = Opts::from_args();
 
-    let r = Resolver::default()?;
-    let opendns_ip = r.ipv4_lookup("resolver1.opendns.com")?;
-    let opendns_ip = opendns_ip.iter().next().unwrap_or(&DEFAULT_OPENDNS_IP);
+    std::env::set_var("LOG_LEVEL", opts.log_level);
+
+    env_logger::init_from_env("LOG_LEVEL");
+
+    info!("Starting ddns {}", crate_version!());
+
+    info!("Loading configuration from {}", opts.config_file);
+    let f =
+        std::fs::read_to_string(opts.config_file).context("Failed to read configuration file")?;
+    debug!("Raw config: {}", f);
+
+    let c: Config = toml::from_str(&f).context("Failed to parse configuration file")?;
+    debug!("Decoded config: {:?}", c);
+
+    info!("Fetching OpenDNS IP address");
+    let r = AsyncResolver::tokio_from_system_conf().await?;
+    let opendns_ip = r.ipv4_lookup("resolver1.opendns.com").await?;
+    let opendns_ip = opendns_ip.into_iter().next().unwrap_or(DEFAULT_OPENDNS_IP);
+
+    info!("Using OpenDNS IP {}", opendns_ip);
 
     let mut rconf = ResolverConfig::new();
     rconf.add_name_server(NameServerConfig {
-        socket_addr: SocketAddr::new(IpAddr::from(opendns_ip.clone()), 53),
+        socket_addr: SocketAddr::new(IpAddr::from(opendns_ip), 53),
         protocol: Protocol::Udp,
         tls_dns_name: None,
     });
-    let r = Resolver::new(rconf, trust_dns_resolver::config::ResolverOpts::default())?;
+    let r =
+        AsyncResolver::tokio(rconf, trust_dns_resolver::config::ResolverOpts::default()).await?;
 
-    let domain_ip = r.ipv4_lookup(c.domain)?;
-    let domain_ip = domain_ip.iter().next().unwrap();
-    let interval_seconds = c.interval_seconds.unwrap_or(3600);
-
-    println!("Checking IP address every {} seconds", &interval_seconds);
-
-    let updater: Box<dyn UpdateRecord> = match c.provider {
-        "aws" => {
-            let provider_config = match c.aws {
-                Some(c) => c,
-                None => {
-                    eprintln!("Missing provider specific configuration");
-                    std::process::exit(1);
-                }
+    info!("Generating update tasks");
+    let tasks: Vec<(&String, Box<dyn Provider>)> = c
+        .entries
+        .iter()
+        .map(|e| {
+            let domain = &e.domain;
+            let provider: Box<dyn Provider> = match &e.provider {
+                ProviderType::Aws {
+                    hosted_zone_id,
+                    ttl,
+                } => Box::new(Aws::new(domain, &hosted_zone_id, ttl.unwrap_or(300))),
             };
-            Box::new(Aws::new(
-                c.domain,
-                provider_config.hosted_zone_id,
-                provider_config.ttl.unwrap_or(300),
-            ))
-        }
-        _ => {
-            eprintln!("Unsupported DNS provider: {}", c.provider);
-            std::process::exit(1);
-        }
-    };
+
+            (domain, provider)
+        })
+        .collect();
+
+    info!(
+        "Checking IP address drift every {} seconds",
+        c.global.interval_seconds
+    );
 
     loop {
-        let machine_ip = r.ipv4_lookup("myip.opendns.com")?;
-        let machine_ip = machine_ip.iter().next().unwrap();
+        debug!("Fetching current machine's IP address");
+        let machine_ip = r
+            .ipv4_lookup("myip.opendns.com")
+            .await
+            .context("Failed to query machine's IP address")?;
+        let machine_ip = machine_ip
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow!("Failed to extract machine's IP address"))?;
 
-        if machine_ip != domain_ip {
-            println!("Updating {} from {} to {}", c.domain, domain_ip, machine_ip);
-            updater.update_dns_record(machine_ip)?;
+        for (domain, provider) in tasks.iter() {
+            debug!("Checking IP for {}", domain);
+            let domain_ip = provider
+                .get_current()
+                .await
+                .context(format!("Failed to check IP for {}", domain))?;
+
+            debug!(
+                "{}, current::{}, machine::{}",
+                domain, domain_ip, machine_ip
+            );
+            if machine_ip != domain_ip {
+                info!("Updating {} from {} to {}", domain, domain_ip, machine_ip);
+                match provider.update_dns_record(&machine_ip).await {
+                    Ok(_) => info!(
+                        "Successfully updated {} from {} to {}",
+                        domain, domain_ip, machine_ip
+                    ),
+                    Err(e) => error!("Failed to update record for {}: {}", domain, e),
+                }
+            } else {
+                info!("{} is up to date", domain);
+            };
         }
 
-        std::thread::sleep(std::time::Duration::from_secs(interval_seconds));
-    }
-}
-
-struct Aws {
-    client: Route53Client,
-    domain: String,
-    hosted_zone_id: String,
-    ttl: i64,
-}
-
-impl Aws {
-    pub fn new(domain: impl ToString, hosted_zone_id: impl ToString, ttl: i64) -> Self {
-        Self {
-            client: Route53Client::new(Region::default()),
-            domain: domain.to_string(),
-            hosted_zone_id: hosted_zone_id.to_string(),
-            ttl,
+        if opts.once {
+            return Ok(());
         }
+
+        debug!("Sleeping for {} seconds", c.global.interval_seconds);
+        std::thread::sleep(std::time::Duration::from_secs(c.global.interval_seconds));
     }
-}
-
-impl UpdateRecord for Aws {
-    fn update_dns_record(&self, ip: &Ipv4Addr) -> Result<(), Box<dyn Error>> {
-        let res = self
-            .client
-            .change_resource_record_sets(rusoto_route53::ChangeResourceRecordSetsRequest {
-                change_batch: rusoto_route53::ChangeBatch {
-                    changes: vec![rusoto_route53::Change {
-                        action: String::from("UPSERT"),
-                        resource_record_set: rusoto_route53::ResourceRecordSet {
-                            alias_target: None,
-                            failover: None,
-                            geo_location: None,
-                            health_check_id: None,
-                            multi_value_answer: None,
-                            name: self.domain.clone(),
-                            region: None,
-                            resource_records: Some(vec![rusoto_route53::ResourceRecord {
-                                value: format!("{}", ip),
-                            }]),
-                            set_identifier: None,
-                            ttl: Some(self.ttl),
-                            traffic_policy_instance_id: None,
-                            type_: String::from("A"),
-                            weight: None,
-                        },
-                    }],
-                    // TODO add a comment
-                    comment: None,
-                },
-                hosted_zone_id: self.hosted_zone_id.clone(),
-            })
-            .sync();
-
-        match res {
-            Ok(_) => println!("Updated successfully"),
-            Err(e) => eprintln!("Failed to update: {}", e),
-        };
-
-        Ok(())
-    }
-}
-
-trait UpdateRecord {
-    fn update_dns_record(&self, ip: &Ipv4Addr) -> Result<(), Box<dyn Error>>;
 }

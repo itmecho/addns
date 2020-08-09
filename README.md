@@ -1,22 +1,54 @@
-# addns
+# DDNS
 
-Dynamic DNS for an AWS route 53 record
+Dynamic DNS for multiple DNS providers
+
+## Provider
+The following DNS providers are currently supported:
+
+* AWS Route53
+
+## Usage
+
+```
+ddns 0.1.0
+Multi-provider dynamic DNS
+
+USAGE:
+    ddns [FLAGS] [OPTIONS]
+
+FLAGS:
+    -h, --help       Prints help information
+    -o, --once       Run ddns once and exit
+    -V, --version    Prints version information
+
+OPTIONS:
+    -c, --config-file <config-file>    Path to the config file [env: CONFIG_FILE=]  [default: ddns.toml]
+    -l, --log-level <log-level>        Enables different levels of log messages [env: LOG_LEVEL=]  [default: info]
+```
 
 ## Configuration
 
 ### AWS
-addns relies on the standard AWS configuration strategies, (`aws configure`, `AWS_ACCESS_KEY`, `AWS_SECRET_KEY`, etc).
+`ddns` relies on the standard AWS configuration strategies, (shared credentials, `AWS_ACCESS_KEY`, `AWS_SECRET_KEY`, Instance Profile, etc).
 
 ### Config file
-Configuration is stored in a `toml` file. Currently only AWS Route53 is supported as a DNS provider.
+Configuration is stored in a `toml` file. The default path for the config file is `./ddns.toml` but this can be altered using the `DDNS_CONFIG_FILE` environment variable.
 
 ```
-domain = "srv01.mydomain.com"
-provider = "aws"
-interval_seconds = 60 # Optional (default 3600)
+[global]
+interval_seconds = 300
 
-# This block is required when provider is set to "aws"
-[aws]
-hosted_zone_id = "ABCDEFG1234567"
-ttl = 300 # Optional (default 300)
+[[entries]]
+domain = "jellyfin.mydomain.net"
+
+    [entries.provider]
+    type = "aws"
+    hosted_zone_id = "ABCDEFG1234567"
+
+[[entries]]
+domain = "matrix.mydomain.com"
+
+    [entries.provider]
+    type = "aws"
+    hosted_zone_id = "1234567ABCDEFG"
 ```

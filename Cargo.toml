@@ -1,15 +1,29 @@
 [package]
-name = "addns"
+name = "ddns"
 version = "0.1.0"
 authors = ["Iain Earl <iain@itmecho.com>"]
 edition = "2018"
 
+[lib]
+name = "ddns"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ddns"
+path = "src/main.rs"
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-# TODO upgrade to 0.43
-rusoto_core = "0.42"
-rusoto_route53 = "0.42"
+rusoto_core = "0.45"
+rusoto_route53 = "0.45"
 serde = { version = "1", features = ["derive"] }
 toml = "0.5"
 trust-dns-resolver = "0.19"
+log = "0.4.11"
+env_logger = "0.7.1"
+anyhow = "1.0.31"
+structopt = "0.3.16"
+tokio = { version = "0.2.22", default-features = false, features = ["macros"] }
+async-trait = "0.1.36"
+rusoto_mock = "0.45.0"
